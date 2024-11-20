@@ -13,26 +13,43 @@ from constants import PUPPET_GRIPPER_JOINT_OPEN
 from utils import load_data # data functions
 from utils import sample_box_pose, sample_insertion_pose # robot functions
 from utils import compute_dict_mean, set_seed, detach_dict # helper functions
-from policy import ACTPolicy, CNNMLPPolicy
+# from policy import ACTPolicy, CNNMLPPolicy
 from visualize_episodes import save_videos
 
 from sim_env import BOX_POSE
 
 import IPython
-e = IPython.embed
 
-def main(args):
+from diffusion_policy.workspace.base_workspace import BaseWorkspace
+from diffusion_policy.model.common.lr_scheduler import get_scheduler
+from diffusion_policy.policy.diffusion_unet_lowdim_policy import DiffusionUnetLowdimPolicy
+from diffusion_policy.common.pytorch_util import dict_apply, optimizer_to
+from diffusion_policy.common.checkpoint_util import TopKCheckpointManager
+
+from omegaconf import OmegaConf
+import hydra
+import pathlib
+e = IPython.embed
+### 如果是 train，如果不是就注释掉
+OmegaConf.register_new_resolver("eval", eval, replace=True)
+
+@hydra.main(
+    version_base=None,
+    config_path=str(pathlib.Path(__file__).parent.joinpath(
+        'diffusion_policy','config'))
+)
+def main(args,cfg: OmegaConf):
     set_seed(1)
     # command line parameters
     is_eval = args['eval']
     ckpt_dir = args['ckpt_dir']
-    policy_class = args['policy_class']
+    # policy_class = args['policy_class']
     onscreen_render = args['onscreen_render']
     task_name = args['task_name']
     batch_size_train = args['batch_size']
     batch_size_val = args['batch_size']
     num_epochs = args['num_epochs']
-
+    
     # get task parameters
     is_sim = task_name[:4] == 'sim_'
     if is_sim:
@@ -46,41 +63,44 @@ def main(args):
     episode_len = task_config['episode_len']
     camera_names = task_config['camera_names']
 
-    # fixed parameters
-    state_dim = 14
-    lr_backbone = 1e-5
-    backbone = 'resnet18'
-    if policy_class == 'ACT':
-        enc_layers = 4
-        dec_layers = 7
-        nheads = 8
-        policy_config = {'lr': args['lr'],
-                         'num_queries': args['chunk_size'],
-                         'kl_weight': args['kl_weight'],
-                         'hidden_dim': args['hidden_dim'],
-                         'dim_feedforward': args['dim_feedforward'],
-                         'lr_backbone': lr_backbone,
-                         'backbone': backbone,
-                         'enc_layers': enc_layers,
-                         'dec_layers': dec_layers,
-                         'nheads': nheads,
-                         'camera_names': camera_names,
-                         }
-    elif policy_class == 'CNNMLP':
-        policy_config = {'lr': args['lr'], 'lr_backbone': lr_backbone, 'backbone' : backbone, 'num_queries': 1,
-                         'camera_names': camera_names,}
-    else:
-        raise NotImplementedError
-
+    # # fixed parameters
+    # state_dim = 14
+    # lr_backbone = 1e-5
+    # backbone = 'resnet18'
+    # if policy_class == 'ACT':
+    #     enc_layers = 4
+    #     dec_layers = 7
+    #     nheads = 8
+    #     policy_config = {'lr': args['lr'],
+    #                      'num_queries': args['chunk_size'],
+    #                      'kl_weight': args['kl_weight'],
+    #                      'hidden_dim': args['hidden_dim'],
+    #                      'dim_feedforward': args['dim_feedforward'],
+    #                      'lr_backbone': lr_backbone,
+    #                      'backbone': backbone,
+    #                      'enc_layers': enc_layers,
+    #                      'dec_layers': dec_layers,
+    #                      'nheads': nheads,
+    #                      'camera_names': camera_names,
+    #                      }
+    # elif policy_class == 'CNNMLP':
+    #     policy_config = {'lr': args['lr'], 'lr_backbone': lr_backbone, 'backbone' : backbone, 'num_queries': 1,
+    #                      'camera_names': camera_names,}
+    # else:
+    #     raise NotImplementedError
+    OmegaConf.resolve(cfg)
+    cls = hydra.utils.get_class(cfg._target_)
+    # if cfg.training.resume:
+    #     lastest_ckpt_path = self.get_checkpoint_path()
+    # ckpt_path = lastest_ckpt_path
     config = {
         'num_epochs': num_epochs,
         'ckpt_dir': ckpt_dir,
         'episode_len': episode_len,
         'state_dim': state_dim,
         'lr': args['lr'],
-        'policy_class': policy_class,
         'onscreen_render': onscreen_render,
-        'policy_config': policy_config,
+        # 'policy_config': policy_config,
         'task_name': task_name,
         'seed': args['seed'],
         'temporal_agg': args['temporal_agg'],
@@ -90,13 +110,11 @@ def main(args):
 
     if is_eval:
         ckpt_names = [f'policy_best.ckpt']
+        
         results = []
-        for ckpt_name in ckpt_names:
-            success_rate, avg_return = eval_bc(config, ckpt_name, save_episode=True)
-            results.append([ckpt_name, success_rate, avg_return])
-
-        for ckpt_name, success_rate, avg_return in results:
-            print(f'{ckpt_name}: {success_rate=} {avg_return=}')
+        success_rate, avg_return = eval_bc(config, ckpt_dir, save_episode=True)
+        results.append([ckpt_name, success_rate, avg_return])
+        print(f'{ckpt_name}: {success_rate=} {avg_return=}')
         print()
         exit()
 
@@ -118,24 +136,24 @@ def main(args):
     print(f'Best ckpt, val loss {min_val_loss:.6f} @ epoch{best_epoch}')
 
 
-def make_policy(policy_class, policy_config):
-    if policy_class == 'ACT':
-        policy = ACTPolicy(policy_config)
-    elif policy_class == 'CNNMLP':
-        policy = CNNMLPPolicy(policy_config)
-    else:
-        raise NotImplementedError
-    return policy
+# def make_policy(policy_class, policy_config):
+#     if policy_class == 'ACT':
+#         policy = ACTPolicy(policy_config)
+#     elif policy_class == 'CNNMLP':
+#         policy = CNNMLPPolicy(policy_config)
+#     else:
+#         raise NotImplementedError
+#     return policy
 
 
-def make_optimizer(policy_class, policy):
-    if policy_class == 'ACT':
-        optimizer = policy.configure_optimizers()
-    elif policy_class == 'CNNMLP':
-        optimizer = policy.configure_optimizers()
-    else:
-        raise NotImplementedError
-    return optimizer
+# def make_optimizer(policy_class, policy):
+#     if policy_class == 'ACT':
+#         optimizer = policy.configure_optimizers()
+#     elif policy_class == 'CNNMLP':
+#         optimizer = policy.configure_optimizers()
+#     else:
+#         raise NotImplementedError
+#     return optimizer
 
 
 def get_image(ts, camera_names):
@@ -153,9 +171,9 @@ def eval_bc(config, ckpt_name, save_episode=True):
     ckpt_dir = config['ckpt_dir']
     state_dim = config['state_dim']
     real_robot = config['real_robot']
-    policy_class = config['policy_class']
+    # policy_class = config['policy_class']
     onscreen_render = config['onscreen_render']
-    policy_config = config['policy_config']
+    # policy_config = config['policy_config']
     camera_names = config['camera_names']
     max_timesteps = config['episode_len']
     task_name = config['task_name']
@@ -163,12 +181,29 @@ def eval_bc(config, ckpt_name, save_episode=True):
     onscreen_cam = 'angle'
 
     # load policy and stats
-    ckpt_path = os.path.join(ckpt_dir, ckpt_name)
-    policy = make_policy(policy_class, policy_config)
-    loading_status = policy.load_state_dict(torch.load(ckpt_path))
-    print(loading_status)
-    policy.cuda()
+    # ckpt_path = os.path.join(ckpt_dir, ckpt_name)
+    # policy = make_policy(policy_class, policy_config)
+    # loading_status = policy.load_state_dict(torch.load(ckpt_path))
+    # print(loading_status)
+    # policy.cuda()
+    # policy.eval()
+    
+    payload = torch.load(open(ckpt_dir, 'rb'), pickle_module=dill)
+    cfg = payload['cfg']
+    cls = hydra.utils.get_class(cfg._target_)
+    workspace = cls(cfg, output_dir=output_dir)
+    workspace: BaseWorkspace
+    workspace.load_payload(payload, exclude_keys=None, include_keys=None)
+    
+    # get policy from workspace
+    policy = workspace.model
+    if cfg.training.use_ema:
+        policy = workspace.ema_model
+    
+    device = torch.device(device)
+    policy.to(device)
     policy.eval()
+    
     print(f'Loaded: {ckpt_path}')
     stats_path = os.path.join(ckpt_dir, f'dataset_stats.pkl')
     with open(stats_path, 'rb') as f:
@@ -207,7 +242,7 @@ def eval_bc(config, ckpt_name, save_episode=True):
             BOX_POSE[0] = np.concatenate(sample_insertion_pose()) # used in sim reset
 
         ts = env.reset()
-
+        policy.reset()
         ### onscreen render
         if onscreen_render:
             ax = plt.subplot()
@@ -223,8 +258,9 @@ def eval_bc(config, ckpt_name, save_episode=True):
         qpos_list = []
         target_qpos_list = []
         rewards = []
+        done = False
         with torch.inference_mode():
-            for t in range(max_timesteps):
+            while not done:
                 ### update onscreen render and wait for DT
                 if onscreen_render:
                     image = env._physics.render(height=480, width=640, camera_id=onscreen_cam)
@@ -242,33 +278,19 @@ def eval_bc(config, ckpt_name, save_episode=True):
                 qpos = torch.from_numpy(qpos).float().cuda().unsqueeze(0)
                 qpos_history[:, t] = qpos
                 curr_image = get_image(ts, camera_names)
+                ## obs dict
+                with torch.no_grad():
+                    action_dict = policy.predict_action(obs_dict)
 
-                ### query policy
-                if config['policy_class'] == "ACT":
-                    if t % query_frequency == 0:
-                        all_actions = policy(qpos, curr_image)
-                    if temporal_agg:
-                        all_time_actions[[t], t:t+num_queries] = all_actions
-                        actions_for_curr_step = all_time_actions[:, t]
-                        actions_populated = torch.all(actions_for_curr_step != 0, axis=1)
-                        actions_for_curr_step = actions_for_curr_step[actions_populated]
-                        k = 0.01
-                        exp_weights = np.exp(-k * np.arange(len(actions_for_curr_step)))
-                        exp_weights = exp_weights / exp_weights.sum()
-                        exp_weights = torch.from_numpy(exp_weights).cuda().unsqueeze(dim=1)
-                        raw_action = (actions_for_curr_step * exp_weights).sum(dim=0, keepdim=True)
-                    else:
-                        raw_action = all_actions[:, t % query_frequency]
-                elif config['policy_class'] == "CNNMLP":
-                    raw_action = policy(qpos, curr_image)
-                else:
-                    raise NotImplementedError
+                # device_transfer
+                np_action_dict = dict_apply(action_dict,
+                    lambda x: x.detach().to('cpu').numpy())
 
-                ### post-process actions
-                raw_action = raw_action.squeeze(0).cpu().numpy()
-                action = post_process(raw_action)
+                action = np_action_dict['action']
+                if not np.all(np.isfinite(action)):
+                    print(action)
+                    raise RuntimeError("Nan or Inf action")
                 target_qpos = action
-
                 ### step the environment
                 ts = env.step(target_qpos)
 
@@ -327,11 +349,57 @@ def train_bc(train_dataloader, val_dataloader, config):
     policy_config = config['policy_config']
 
     set_seed(seed)
+    # payload = torch.load(open(ckpt_dir, 'rb'), pickle_module=dill)
+    # cfg = payload['cfg']
+    # cls = hydra.utils.get_class(cfg._target_)
+    # workspace = cls(cfg, output_dir=output_dir)
+    # workspace: BaseWorkspace
+    # workspace.load_payload(payload, exclude_keys=None, include_keys=None)
+    
+    # # get policy from workspace
+    # policy = workspace.model
+    # if cfg.training.use_ema:
+    #     policy = workspace.ema_model
+    
+    # device = torch.device(device)
+    # policy.to(device)
+    # policy.eval()
+    
+    
+    model: DiffusionUnetLowdimPolicy
+    model = hydra.utils.instantiate(cfg.policy)
 
-    policy = make_policy(policy_class, policy_config)
+    ema_model: DiffusionUnetLowdimPolicy = None
+    if cfg.training.use_ema:
+        ema_model = copy.deepcopy(model)
+
+    # configure training state
+    optimizer = hydra.utils.instantiate(
+        cfg.optimizer, params=model.parameters())
+    global_step = 0
+    # optimizer = make_optimizer(policy_class, policy)
+    lr_scheduler = get_scheduler(
+        cfg.training.lr_scheduler,
+        optimizer=self.optimizer,
+        num_warmup_steps=cfg.training.lr_warmup_steps,
+        num_training_steps=(
+            len(train_dataloader) * cfg.training.num_epochs) \
+                // cfg.training.gradient_accumulate_every,
+        # pytorch assumes stepping LRScheduler every epoch
+        # however huggingface diffusers steps it every batch
+        last_epoch=self.global_step-1
+    )
+    ema: EMAModel = None
+    if cfg.training.use_ema:
+        ema = hydra.utils.instantiate(
+            cfg.ema,
+            model=ema_model)
+    policy = self.model
+    if cfg.training.use_ema:
+        policy = self.ema_model
+        
     policy.cuda()
-    optimizer = make_optimizer(policy_class, policy)
-
+    
     train_history = []
     validation_history = []
     min_val_loss = np.inf
