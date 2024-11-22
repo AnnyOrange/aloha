@@ -30,6 +30,24 @@ from omegaconf import OmegaConf
 import hydra
 import pathlib
 e = IPython.embed
+
+def parse_args():
+    parser = argparse.ArgumentParser()
+    parser.add_argument('--eval', action='store_true')
+    parser.add_argument('--onscreen_render', action='store_true')
+    parser.add_argument('--ckpt_dir', action='store', type=str, help='ckpt_dir', required=True)
+    parser.add_argument('--policy_class', action='store', type=str, help='policy_class, capitalize', required=True)
+    parser.add_argument('--task_name', action='store', type=str, help='task_name', required=True)
+    parser.add_argument('--batch_size', action='store', type=int, help='batch_size', required=True)
+    parser.add_argument('--seed', action='store', type=int, help='seed', required=True)
+    parser.add_argument('--num_epochs', action='store', type=int, help='num_epochs', required=True)
+    parser.add_argument('--lr', action='store', type=float, help='lr', required=True)
+    parser.add_argument('--temporal_agg', action='store_true')
+    parser.add_argument('--device', action='store',type=str,help='device',required=True)
+    
+    return vars(parser.parse_args())
+
+
 ### 如果是 train，如果不是就注释掉
 OmegaConf.register_new_resolver("eval", eval, replace=True)
 
@@ -39,6 +57,8 @@ OmegaConf.register_new_resolver("eval", eval, replace=True)
         'diffusion_policy','config'))
 )
 def main(args,cfg: OmegaConf):
+    
+    args = parse_args()
     set_seed(1)
     # command line parameters
     is_eval = args['eval']
@@ -49,7 +69,9 @@ def main(args,cfg: OmegaConf):
     batch_size_train = args['batch_size']
     batch_size_val = args['batch_size']
     num_epochs = args['num_epochs']
-    
+    config_name = args['config_name']
+    config_dir = args['config_dir']
+    device = args['device']
     # get task parameters
     is_sim = task_name[:4] == 'sim_'
     if is_sim:
@@ -62,7 +84,7 @@ def main(args,cfg: OmegaConf):
     num_episodes = task_config['num_episodes']
     episode_len = task_config['episode_len']
     camera_names = task_config['camera_names']
-
+    
     # # fixed parameters
     # state_dim = 14
     # lr_backbone = 1e-5
@@ -88,11 +110,15 @@ def main(args,cfg: OmegaConf):
     #                      'camera_names': camera_names,}
     # else:
     #     raise NotImplementedError
+    if args['policy_class']!='diffusion':
+        raise ValueError(f"Invalid policy_class: {args['policy_class']}. Expected 'diffusion'.")
+    
     OmegaConf.resolve(cfg)
     cls = hydra.utils.get_class(cfg._target_)
     # if cfg.training.resume:
     #     lastest_ckpt_path = self.get_checkpoint_path()
     # ckpt_path = lastest_ckpt_path
+    statedim = 14
     config = {
         'num_epochs': num_epochs,
         'ckpt_dir': ckpt_dir,
@@ -105,7 +131,8 @@ def main(args,cfg: OmegaConf):
         'seed': args['seed'],
         'temporal_agg': args['temporal_agg'],
         'camera_names': camera_names,
-        'real_robot': not is_sim
+        'real_robot': not is_sim,
+        'device':device
     }
 
     if is_eval:
@@ -127,7 +154,7 @@ def main(args,cfg: OmegaConf):
     with open(stats_path, 'wb') as f:
         pickle.dump(stats, f)
 
-    best_ckpt_info = train_bc(train_dataloader, val_dataloader, config)
+    best_ckpt_info = train_bc(train_dataloader, val_dataloader, config, cfg)
     best_epoch, min_val_loss, best_state_dict = best_ckpt_info
 
     # save best checkpoint
@@ -162,12 +189,14 @@ def get_image(ts, camera_names):
         curr_image = rearrange(ts.observation['images'][cam_name], 'h w c -> c h w')
         curr_images.append(curr_image)
     curr_image = np.stack(curr_images, axis=0)
-    curr_image = torch.from_numpy(curr_image / 255.0).float().cuda().unsqueeze(0)
+    curr_image = torch.from_numpy(curr_image / 255.0).float().to(device).unsqueeze(0)
     return curr_image
 
 
 def eval_bc(config, ckpt_name, save_episode=True):
+    
     set_seed(1000)
+    device = config['device']
     ckpt_dir = config['ckpt_dir']
     state_dim = config['state_dim']
     real_robot = config['real_robot']
@@ -185,7 +214,7 @@ def eval_bc(config, ckpt_name, save_episode=True):
     # policy = make_policy(policy_class, policy_config)
     # loading_status = policy.load_state_dict(torch.load(ckpt_path))
     # print(loading_status)
-    # policy.cuda()
+    # policy.to(device)
     # policy.eval()
     
     payload = torch.load(open(ckpt_dir, 'rb'), pickle_module=dill)
@@ -251,9 +280,9 @@ def eval_bc(config, ckpt_name, save_episode=True):
 
         ### evaluation loop
         if temporal_agg:
-            all_time_actions = torch.zeros([max_timesteps, max_timesteps+num_queries, state_dim]).cuda()
+            all_time_actions = torch.zeros([max_timesteps, max_timesteps+num_queries, state_dim]).to(device)
 
-        qpos_history = torch.zeros((1, max_timesteps, state_dim)).cuda()
+        qpos_history = torch.zeros((1, max_timesteps, state_dim)).to(device)
         image_list = [] # for visualization
         qpos_list = []
         target_qpos_list = []
@@ -275,7 +304,7 @@ def eval_bc(config, ckpt_name, save_episode=True):
                     image_list.append({'main': obs['image']})
                 qpos_numpy = np.array(obs['qpos'])
                 qpos = pre_process(qpos_numpy)
-                qpos = torch.from_numpy(qpos).float().cuda().unsqueeze(0)
+                qpos = torch.from_numpy(qpos).float().to(device).unsqueeze(0)
                 qpos_history[:, t] = qpos
                 curr_image = get_image(ts, camera_names)
                 ## obs dict
@@ -337,37 +366,21 @@ def eval_bc(config, ckpt_name, save_episode=True):
 
 def forward_pass(data, policy):
     image_data, qpos_data, action_data, is_pad = data
-    image_data, qpos_data, action_data, is_pad = image_data.cuda(), qpos_data.cuda(), action_data.cuda(), is_pad.cuda()
+    image_data, qpos_data, action_data, is_pad = image_data.to(device), qpos_data.to(device), action_data.to(device), is_pad.to(device)
     return policy(qpos_data, image_data, action_data, is_pad) # TODO remove None
 
 
-def train_bc(train_dataloader, val_dataloader, config):
+def train_bc(train_dataloader, val_dataloader, config, cfg):
+    device = config['device']
     num_epochs = config['num_epochs']
     ckpt_dir = config['ckpt_dir']
     seed = config['seed']
-    policy_class = config['policy_class']
-    policy_config = config['policy_config']
-
+    # policy_class = config['policy_class']
+    # optimizer_class = config['optimizer_class']
     set_seed(seed)
-    # payload = torch.load(open(ckpt_dir, 'rb'), pickle_module=dill)
-    # cfg = payload['cfg']
-    # cls = hydra.utils.get_class(cfg._target_)
-    # workspace = cls(cfg, output_dir=output_dir)
-    # workspace: BaseWorkspace
-    # workspace.load_payload(payload, exclude_keys=None, include_keys=None)
-    
-    # # get policy from workspace
-    # policy = workspace.model
-    # if cfg.training.use_ema:
-    #     policy = workspace.ema_model
-    
-    # device = torch.device(device)
-    # policy.to(device)
-    # policy.eval()
-    
     
     model: DiffusionUnetLowdimPolicy
-    model = hydra.utils.instantiate(cfg.policy)
+    model = hydra.utils.instantiate(policy_class)
 
     ema_model: DiffusionUnetLowdimPolicy = None
     if cfg.training.use_ema:
@@ -380,7 +393,7 @@ def train_bc(train_dataloader, val_dataloader, config):
     # optimizer = make_optimizer(policy_class, policy)
     lr_scheduler = get_scheduler(
         cfg.training.lr_scheduler,
-        optimizer=self.optimizer,
+        optimizer=optimizer,
         num_warmup_steps=cfg.training.lr_warmup_steps,
         num_training_steps=(
             len(train_dataloader) * cfg.training.num_epochs) \
@@ -394,12 +407,17 @@ def train_bc(train_dataloader, val_dataloader, config):
         ema = hydra.utils.instantiate(
             cfg.ema,
             model=ema_model)
-    policy = self.model
+    policy = model
     if cfg.training.use_ema:
-        policy = self.ema_model
-        
-    policy.cuda()
-    
+        policy = ema_model
+    topk_manager = TopKCheckpointManager(
+            save_dir=os.path.join(output_dir, 'checkpoints'),
+            **cfg.checkpoint.topk
+        )    
+    policy.to(device)
+    if ema_model is not None:
+        ema_model.to(device)
+    optimizer_to(optimizer, device)
     train_history = []
     validation_history = []
     min_val_loss = np.inf
@@ -482,22 +500,10 @@ def plot_history(train_history, validation_history, num_epochs, ckpt_dir, seed):
 
 
 if __name__ == '__main__':
-    parser = argparse.ArgumentParser()
-    parser.add_argument('--eval', action='store_true')
-    parser.add_argument('--onscreen_render', action='store_true')
-    parser.add_argument('--ckpt_dir', action='store', type=str, help='ckpt_dir', required=True)
-    parser.add_argument('--policy_class', action='store', type=str, help='policy_class, capitalize', required=True)
-    parser.add_argument('--task_name', action='store', type=str, help='task_name', required=True)
-    parser.add_argument('--batch_size', action='store', type=int, help='batch_size', required=True)
-    parser.add_argument('--seed', action='store', type=int, help='seed', required=True)
-    parser.add_argument('--num_epochs', action='store', type=int, help='num_epochs', required=True)
-    parser.add_argument('--lr', action='store', type=float, help='lr', required=True)
-
+    main()
     # for ACT
-    parser.add_argument('--kl_weight', action='store', type=int, help='KL Weight', required=False)
-    parser.add_argument('--chunk_size', action='store', type=int, help='chunk_size', required=False)
-    parser.add_argument('--hidden_dim', action='store', type=int, help='hidden_dim', required=False)
-    parser.add_argument('--dim_feedforward', action='store', type=int, help='dim_feedforward', required=False)
-    parser.add_argument('--temporal_agg', action='store_true')
+    # parser.add_argument('--kl_weight', action='store', type=int, help='KL Weight', required=False)
+    # parser.add_argument('--chunk_size', action='store', type=int, help='chunk_size', required=False)
+    # parser.add_argument('--hidden_dim', action='store', type=int, help='hidden_dim', required=False)
+    # parser.add_argument('--dim_feedforward', action='store', type=int, help='dim_feedforward', required=False)
     
-    main(vars(parser.parse_args()))
