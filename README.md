@@ -3,6 +3,10 @@
 ### *New*: [ACT tuning tips](https://docs.google.com/document/d/1FVIZfoALXg_ZkYKaYVh-qOlaXveq5CtvJHXkY25eYhs/edit?usp=sharing)
 TL;DR: if your ACT policy is jerky or pauses in the middle of an episode, just train for longer! Success rate and smoothness can improve way after loss plateaus.
 
+## config
+
+一个脚本中同时使用 argparse 和 Hydra
+
 #### Project Website: https://tonyzhaozh.github.io/aloha/
 
 This repo contains the implementation of ACT, together with 2 simulated environments:
