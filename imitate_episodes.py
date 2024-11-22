@@ -31,21 +31,21 @@ import hydra
 import pathlib
 e = IPython.embed
 
-def parse_args():
-    parser = argparse.ArgumentParser()
-    parser.add_argument('--eval', action='store_true')
-    parser.add_argument('--onscreen_render', action='store_true')
-    parser.add_argument('--ckpt_dir', action='store', type=str, help='ckpt_dir', required=True)
-    parser.add_argument('--policy_class', action='store', type=str, help='policy_class, capitalize', required=True)
-    parser.add_argument('--task_name', action='store', type=str, help='task_name', required=True)
-    parser.add_argument('--batch_size', action='store', type=int, help='batch_size', required=True)
-    parser.add_argument('--seed', action='store', type=int, help='seed', required=True)
-    parser.add_argument('--num_epochs', action='store', type=int, help='num_epochs', required=True)
-    parser.add_argument('--lr', action='store', type=float, help='lr', required=True)
-    parser.add_argument('--temporal_agg', action='store_true')
-    parser.add_argument('--device', action='store',type=str,help='device',required=True)
+# def parse_args():
+#     parser = argparse.ArgumentParser()
+#     parser.add_argument('--eval', action='store_true')
+#     parser.add_argument('--onscreen_render', action='store_true')
+#     parser.add_argument('--ckpt_dir', action='store', type=str, help='ckpt_dir', required=True)
+#     parser.add_argument('--policy_class', action='store', type=str, help='policy_class, capitalize', required=True)
+#     parser.add_argument('--task_name', action='store', type=str, help='task_name', required=True)
+#     parser.add_argument('--batch_size', action='store', type=int, help='batch_size', required=True)
+#     parser.add_argument('--seed', action='store', type=int, help='seed', required=True)
+#     parser.add_argument('--num_epochs', action='store', type=int, help='num_epochs', required=True)
+#     parser.add_argument('--lr', action='store', type=float, help='lr', required=True)
+#     parser.add_argument('--temporal_agg', action='store_true')
+#     parser.add_argument('--device', action='store',type=str,help='device',required=True)
     
-    return vars(parser.parse_args())
+#     return vars(parser.parse_args())
 
 
 ### 如果是 train，如果不是就注释掉
@@ -57,21 +57,21 @@ OmegaConf.register_new_resolver("eval", eval, replace=True)
         'diffusion_policy','config'))
 )
 def main(args,cfg: OmegaConf):
-    
-    args = parse_args()
+    # args = parse_args()
     set_seed(1)
     # command line parameters
-    is_eval = args['eval']
-    ckpt_dir = args['ckpt_dir']
-    # policy_class = args['policy_class']
-    onscreen_render = args['onscreen_render']
-    task_name = args['task_name']
-    batch_size_train = args['batch_size']
-    batch_size_val = args['batch_size']
-    num_epochs = args['num_epochs']
-    config_name = args['config_name']
-    config_dir = args['config_dir']
-    device = args['device']
+    # is_eval = args['eval']
+    # ckpt_dir = args['ckpt_dir']
+    # # policy_class = args['policy_class']
+    # onscreen_render = args['onscreen_render']
+    # task_name = args['task_name']
+    # batch_size_train = args['batch_size']
+    # batch_size_val = args['batch_size']
+    # num_epochs = args['num_epochs']
+    # config_name = args['config_name']
+    # config_dir = args['config_dir']
+    # device = args['device']
+    task_name=task.dataset._target_ ## config 文件
     # get task parameters
     is_sim = task_name[:4] == 'sim_'
     if is_sim:
@@ -118,18 +118,32 @@ def main(args,cfg: OmegaConf):
     # if cfg.training.resume:
     #     lastest_ckpt_path = self.get_checkpoint_path()
     # ckpt_path = lastest_ckpt_path
+    if cfg.training.resume:
+        lastest_ckpt_path = self.get_checkpoint_path()
+        if lastest_ckpt_path.is_file():
+            print(f"Resuming from checkpoint {lastest_ckpt_path}")
+            self.load_checkpoint(path=lastest_ckpt_path)
+
     statedim = 14
+    num_epochs = training.num_episodes
+    episode_len = task.dataset.max_train_episodes
+    onscreen_render = onscreen_render## 需要补充(指需要在.yaml补充)
+    seed = task.dataset.seed
+    temporal_agg = temporal_agg## 需要补充
+    camera_names = camera_names ## 需要补充
+    device = training.device
+    ## checkpoints存储和load是烂的
     config = {
         'num_epochs': num_epochs,
         'ckpt_dir': ckpt_dir,
         'episode_len': episode_len,
         'state_dim': state_dim,
-        'lr': args['lr'],
+        'lr': lr,
         'onscreen_render': onscreen_render,
         # 'policy_config': policy_config,
         'task_name': task_name,
-        'seed': args['seed'],
-        'temporal_agg': args['temporal_agg'],
+        'seed': seed,
+        'temporal_agg': temporal_agg,
         'camera_names': camera_names,
         'real_robot': not is_sim,
         'device':device
